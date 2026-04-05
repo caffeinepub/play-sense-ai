@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -18,9 +19,13 @@ import {
   Gamepad2,
   ImageIcon,
   Menu,
+  MessageSquare,
   Rocket,
+  Send,
   Shield,
+  Sparkles,
   Star,
+  Trash2,
   Trophy,
   Upload,
   X,
@@ -1138,6 +1143,698 @@ const GENRE_COLORS: Record<Genre, string> = {
 };
 
 // ============================================================
+// CHAT TYPES & AI LOGIC
+// ============================================================
+interface ChatMessage {
+  id: string;
+  role: "user" | "ai";
+  text: string;
+  timestamp: string;
+}
+
+function formatTime(d: Date): string {
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+const WELCOME_MESSAGE: ChatMessage = {
+  id: "welcome",
+  role: "ai",
+  text: "Hey! I'm your Play Sense AI assistant. I know all 55 games in our library across 8 genres — Action, Horror, Racing, Puzzle, Simulation, Escape, Parkour, and Funny. Ask me anything! Try: 'What's the scariest horror game?' or 'Suggest a relaxing game for tonight' 🎮",
+  timestamp: formatTime(new Date()),
+};
+
+const QUICK_PROMPTS = [
+  "What's the best action game?",
+  "I want something relaxing",
+  "Scariest horror game?",
+  "Best puzzle game to play?",
+  "Funny games for a laugh",
+  "Top rated game overall?",
+];
+
+function generateChatResponse(
+  userMessage: string,
+  _history: ChatMessage[],
+  mentionedGames: Game[],
+): { text: string; newGames: Game[] } {
+  const msg = userMessage.toLowerCase().trim();
+  const newGames: Game[] = [];
+
+  // Helper: find game by name mention
+  function findGameByName(text: string): Game | undefined {
+    return GAME_DATABASE.find((g) =>
+      text.toLowerCase().includes(g.name.toLowerCase()),
+    );
+  }
+
+  // Helper: add game to new if not already mentioned
+  function trackGame(game: Game) {
+    const alreadyMentioned = mentionedGames.some((g) => g.id === game.id);
+    const alreadyNew = newGames.some((g) => g.id === game.id);
+    if (!alreadyMentioned && !alreadyNew) newGames.push(game);
+  }
+
+  // Helper: get top N games of a genre
+  function topByGenre(genre: Genre, n = 3): Game[] {
+    return GAME_DATABASE.filter((g) => g.genre === genre)
+      .sort((a, b) => b.rating - a.rating)
+      .slice(0, n);
+  }
+
+  // Helper: format game details
+  function gameDetail(g: Game): string {
+    return `**${g.name}** (${g.genre}, ${g.releaseYear}) — Rating: ${g.rating}/5\n${g.description}`;
+  }
+
+  // Greeting
+  if (
+    /^(hi|hello|hey|sup|yo|howdy|greetings|what'?s up|whats up|hiya)[\s!?]*$/.test(
+      msg,
+    )
+  ) {
+    return {
+      text: "Hey there, gamer! 👾 I'm your Play Sense AI assistant — your personal guide to 55 amazing games across 8 genres. Whether you're into intense action, chilling simulations, mind-bending puzzles, or laugh-out-loud funny games, I've got you covered! What are you in the mood to play today?",
+      newGames: [],
+    };
+  }
+
+  // "what games do you know" / list all
+  if (
+    /what games (do you know|have you|can you recommend|are there)|list (all|the|your) games|show (me all|all) games|all (55|games)/.test(
+      msg,
+    )
+  ) {
+    const byGenre: Partial<Record<Genre, Game[]>> = {};
+    for (const g of GAME_DATABASE) {
+      if (!byGenre[g.genre]) byGenre[g.genre] = [];
+      byGenre[g.genre]!.push(g);
+    }
+    const summary = Object.entries(byGenre)
+      .map(
+        ([genre, games]) =>
+          `**${genre}** (${games!.length}): ${games!.map((g) => g.name).join(", ")}`,
+      )
+      .join("\n");
+    return {
+      text: `I know all 55 games across 8 genres! Here's the full library:\n\n${summary}\n\nJust ask me about any genre or game for more details! 🎮`,
+      newGames: [],
+    };
+  }
+
+  // "tell me more about [game]" or "more about [game]"
+  const tellMoreMatch = msg.match(
+    /(?:tell me more about|more about|details (?:on|about)|info (?:on|about)|what is|what's|describe)\s+(.+)/,
+  );
+  if (tellMoreMatch) {
+    const query = tellMoreMatch[1];
+    const game =
+      findGameByName(query) ||
+      GAME_DATABASE.find(
+        (g) =>
+          g.tags.some((t) => query.includes(t)) ||
+          query.includes(g.genre.toLowerCase()),
+      );
+    if (game) {
+      trackGame(game);
+      return {
+        text: `Here's everything about **${game.name}**:\n\n🎮 **Genre:** ${game.genre}\n⭐ **Rating:** ${game.rating}/5.0\n📅 **Release Year:** ${game.releaseYear}\n\n📖 **Description:** ${game.description}\n\n🏷️ **Tags:** ${game.tags.join(", ")}\n\nWant me to suggest similar games? Just ask!`,
+        newGames,
+      };
+    }
+    // Use last mentioned game as context
+    if (mentionedGames.length > 0) {
+      const last = mentionedGames[mentionedGames.length - 1];
+      return {
+        text: `Here's more about **${last.name}** (the last game we talked about):\n\n🎮 **Genre:** ${last.genre}\n⭐ **Rating:** ${last.rating}/5.0\n📅 **Release Year:** ${last.releaseYear}\n\n📖 ${last.description}\n\n🏷️ **Tags:** ${last.tags.join(", ")}`,
+        newGames: [],
+      };
+    }
+  }
+
+  // "that game" / "it" / last mentioned context
+  if (
+    /^(that game|it|that one|the last one|the game you mentioned)[\s?!]*$/.test(
+      msg,
+    ) &&
+    mentionedGames.length > 0
+  ) {
+    const last = mentionedGames[mentionedGames.length - 1];
+    return {
+      text: `You mean **${last.name}**? Let me tell you more! It's a ${last.genre} game from ${last.releaseYear} with a ${last.rating}/5 rating. ${last.description} Want me to find similar games?`,
+      newGames: [],
+    };
+  }
+
+  // Genre-specific queries
+  const genreMap: Record<string, Genre> = {
+    action: "Action",
+    fight: "Action",
+    combat: "Action",
+    battle: "Action",
+    shooter: "Action",
+    horror: "Horror",
+    scary: "Horror",
+    spooky: "Horror",
+    terrifying: "Horror",
+    creepy: "Horror",
+    frightening: "Horror",
+    fear: "Horror",
+    racing: "Racing",
+    race: "Racing",
+    car: "Racing",
+    driving: "Racing",
+    speed: "Racing",
+    drift: "Racing",
+    puzzle: "Puzzle",
+    puzzles: "Puzzle",
+    brain: "Puzzle",
+    logic: "Puzzle",
+    thinking: "Puzzle",
+    simulation: "Simulation",
+    sim: "Simulation",
+    "city builder": "Simulation",
+    farming: "Simulation",
+    management: "Simulation",
+    escape: "Escape",
+    "escape room": "Escape",
+    mystery: "Escape",
+    detective: "Escape",
+    parkour: "Parkour",
+    freerun: "Parkour",
+    "free run": "Parkour",
+    jumping: "Parkour",
+    running: "Parkour",
+    funny: "Funny",
+    comedy: "Funny",
+    laugh: "Funny",
+    hilarious: "Funny",
+    silly: "Funny",
+    humor: "Funny",
+    humour: "Funny",
+  };
+
+  // Relaxing / chill keywords → Simulation or Puzzle
+  const relaxKeywords = [
+    "relax",
+    "chill",
+    "calm",
+    "peaceful",
+    "cozy",
+    "soothing",
+    "unwind",
+    "stress",
+    "casual",
+    "easy",
+    "laid back",
+    "laid-back",
+  ];
+  if (relaxKeywords.some((k) => msg.includes(k))) {
+    const picks = [...topByGenre("Simulation", 2), ...topByGenre("Puzzle", 2)];
+    picks.forEach(trackGame);
+    return {
+      text: `Looking for something to wind down with? 🌿 Here are some perfectly relaxing games:\n\n${picks.map((g) => `• ${gameDetail(g)}`).join("\n\n")}\n\nAll of these are great for de-stressing. My top pick for ultimate chill? **${picks[0].name}** — deeply satisfying without being stressful!`,
+      newGames,
+    };
+  }
+
+  // Best / top rated query
+  if (
+    /top rated|best game|highest rated|what('?s| is) the best|number one|#1/.test(
+      msg,
+    )
+  ) {
+    const top = [...GAME_DATABASE]
+      .sort((a, b) => b.rating - a.rating)
+      .slice(0, 3);
+    top.forEach(trackGame);
+    return {
+      text: `🏆 Here are the highest-rated games in our entire library:\n\n${top.map((g, i) => `${["🥇", "🥈", "🥉"][i]} ${gameDetail(g)}`).join("\n\n")}\n\nAll are absolute must-plays. **${top[0].name}** takes the crown with a ${top[0].rating}/5 rating!`,
+      newGames,
+    };
+  }
+
+  // Specific game name lookup
+  const namedGame = findGameByName(msg);
+  if (namedGame) {
+    trackGame(namedGame);
+    return {
+      text: `Great choice asking about **${namedGame.name}**! 🎮\n\n${gameDetail(namedGame)}\n\nWant me to suggest similar ${namedGame.genre.toLowerCase()} games, or do you have more questions about this one?`,
+      newGames,
+    };
+  }
+
+  // Genre detection
+  let detectedGenre: Genre | null = null;
+  for (const [kw, genre] of Object.entries(genreMap)) {
+    if (msg.includes(kw)) {
+      detectedGenre = genre;
+      break;
+    }
+  }
+
+  if (detectedGenre) {
+    const picks = topByGenre(detectedGenre, 3);
+    picks.forEach(trackGame);
+    const genreEmojis: Record<Genre, string> = {
+      Action: "⚔️",
+      Horror: "👻",
+      Racing: "🏎️",
+      Puzzle: "🧩",
+      Simulation: "🏙️",
+      Escape: "🔐",
+      Parkour: "🏃",
+      Funny: "😂",
+    };
+    return {
+      text: `${genreEmojis[detectedGenre]} Love the ${detectedGenre} genre! Here are the top picks:\n\n${picks.map((g) => `• ${gameDetail(g)}`).join("\n\n")}\n\nMy personal recommendation? Start with **${picks[0].name}** — it's consistently rated one of the best ${detectedGenre.toLowerCase()} games in the library!`,
+      newGames,
+    };
+  }
+
+  // Keyword search using existing suggestGames
+  const matches = suggestGames(userMessage);
+  if (matches.length > 0) {
+    for (const m of matches.slice(0, 3)) {
+      trackGame(m.game);
+    }
+    return {
+      text: `Based on what you're looking for, here are my top picks for you:\n\n${matches
+        .slice(0, 3)
+        .map((m) => `• ${gameDetail(m.game)}\n  _${m.whyMatches}_`)
+        .join(
+          "\n\n",
+        )}\n\nWant me to dig deeper into any of these? Just ask! 🎮`,
+      newGames,
+    };
+  }
+
+  // Thanks / positive
+  if (
+    /thank|thanks|thx|ty|awesome|great|cool|nice|perfect|amazing|helpful/.test(
+      msg,
+    )
+  ) {
+    return {
+      text: "You're welcome! 😊 Happy to help you find your next favorite game. Feel free to ask me anything else — I know all 55 games inside out! 🎮",
+      newGames: [],
+    };
+  }
+
+  // Fallback / clarification
+  return {
+    text: `Hmm, I want to help but I'm not quite sure what you're looking for! 🤔 Try asking me something like:\n\n• "Suggest a scary horror game"\n• "What's the best racing game?"\n• "I want something funny and chill"\n• "Tell me about Portal Paradox"\n• "What genres do you have?"\n\nI know 55 games across 8 genres — Action, Horror, Racing, Puzzle, Simulation, Escape, Parkour, and Funny!`,
+    newGames: [],
+  };
+}
+
+// ============================================================
+// CHAT PAGE COMPONENT
+// ============================================================
+interface ChatPageProps {
+  onNavigate: () => void;
+}
+
+function ChatPage({ onNavigate: _onNavigate }: ChatPageProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
+  const [mentionedGames, setMentionedGames] = useState<Game[]>([]);
+  const [inputText, setInputText] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [scrollToBottom]);
+
+  const sendMessage = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || isTyping) return;
+
+      const userMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        text: trimmed,
+        timestamp: formatTime(new Date()),
+      };
+
+      setMessages((prev) => [...prev, userMsg]);
+      setInputText("");
+      setIsTyping(true);
+
+      const delay = 600 + Math.random() * 200;
+      setTimeout(() => {
+        setMessages((prev) => {
+          const history = prev;
+          const { text: responseText, newGames } = generateChatResponse(
+            trimmed,
+            history,
+            mentionedGames,
+          );
+          if (newGames.length > 0) {
+            setMentionedGames((mg) => [...mg, ...newGames]);
+          }
+          const aiMsg: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: "ai",
+            text: responseText,
+            timestamp: formatTime(new Date()),
+          };
+          return [...prev, aiMsg];
+        });
+        setIsTyping(false);
+      }, delay);
+    },
+    [isTyping, mentionedGames],
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage(inputText);
+      }
+    },
+    [inputText, sendMessage],
+  );
+
+  const clearChat = useCallback(() => {
+    setMessages([{ ...WELCOME_MESSAGE, timestamp: formatTime(new Date()) }]);
+    setMentionedGames([]);
+    setInputText("");
+  }, []);
+
+  const hasUserMessages = messages.some((m) => m.role === "user");
+
+  // Render message text with basic markdown-like **bold** support
+  function renderText(text: string) {
+    return text.split("\n").map((line, i) => {
+      const parts = line.split(/\*\*(.+?)\*\*/g);
+      const lineKey = `line-${i}`;
+      return (
+        <span key={lineKey}>
+          {parts.map((p, j) => {
+            const partKey = `${lineKey}-part-${j}`;
+            return j % 2 === 1 ? (
+              <strong key={partKey} className="text-foreground font-semibold">
+                {p}
+              </strong>
+            ) : (
+              <span key={partKey}>{p}</span>
+            );
+          })}
+          {i < text.split("\n").length - 1 && <br />}
+        </span>
+      );
+    });
+  }
+
+  return (
+    <div className="flex flex-col" style={{ height: "calc(100vh - 64px)" }}>
+      {/* Top bar */}
+      <div className="glass-panel border-b border-white/5 px-4 py-3 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.4)] flex items-center justify-center shrink-0">
+            <Bot className="w-4 h-4 neon-text-cyan" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-orbitron text-sm font-bold text-foreground tracking-wider">
+                FREE CHAT
+              </span>
+              <span className="w-2 h-2 rounded-full bg-[oklch(0.82_0.18_200)] animate-pulse-neon" />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              Powered by Game AI
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-[oklch(0.82_0.18_200_/_0.08)] border border-[oklch(0.82_0.18_200_/_0.2)] cursor-default"
+            data-ocid="chat.panel"
+          >
+            <Brain className="w-3.5 h-3.5 neon-text-cyan" />
+            <span className="text-xs font-semibold neon-text-cyan">
+              {mentionedGames.length} memories
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen((o) => !o)}
+            className="sm:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground transition-colors"
+            data-ocid="chat.toggle"
+            aria-label="Toggle memory sidebar"
+          >
+            <Brain className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={clearChat}
+            data-ocid="chat.delete_button"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground border border-white/10 hover:bg-white/5 hover:text-foreground transition-all"
+          >
+            <Trash2 className="w-3 h-3" />
+            <span className="hidden sm:inline">Clear Chat</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Body: sidebar + chat */}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Mobile sidebar overlay */}
+        <AnimatePresence>
+          {sidebarOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-20 bg-black/50 sm:hidden"
+              onClick={() => setSidebarOpen(false)}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Sidebar */}
+        <AnimatePresence>
+          {(sidebarOpen || true) && (
+            <motion.aside
+              className={`
+                ${sidebarOpen ? "fixed inset-y-0 left-0 z-30 mt-16" : "hidden"} 
+                sm:relative sm:flex sm:flex-col
+                w-[260px] shrink-0 glass-panel border-r border-white/5 overflow-hidden
+              `}
+              initial={false}
+            >
+              <div className="p-4 border-b border-white/5 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <Brain className="w-4 h-4 neon-text-cyan" />
+                  <span className="font-orbitron text-xs font-bold tracking-wider neon-text-cyan">
+                    GAME MEMORY
+                  </span>
+                </div>
+                <Badge className="bg-[oklch(0.82_0.18_200_/_0.15)] text-[oklch(0.82_0.18_200)] border-[oklch(0.82_0.18_200_/_0.3)] text-xs">
+                  {mentionedGames.length}
+                </Badge>
+              </div>
+              <ScrollArea className="flex-1 p-3">
+                {mentionedGames.length === 0 ? (
+                  <div
+                    className="flex flex-col items-center gap-2 py-8 px-2 text-center"
+                    data-ocid="chat.memory.empty_state"
+                  >
+                    <Brain className="w-8 h-8 text-muted-foreground/30" />
+                    <p className="text-xs text-muted-foreground/60 leading-relaxed">
+                      Games mentioned in your conversation will appear here
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {mentionedGames.map((game, idx) => (
+                      <motion.div
+                        key={game.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.05 * idx }}
+                        className="p-2.5 rounded-lg bg-[oklch(0.16_0.018_230)] border border-white/5 hover:border-[oklch(0.82_0.18_200_/_0.2)] transition-all"
+                        data-ocid={`chat.memory.item.${idx + 1}`}
+                      >
+                        <p className="text-xs font-semibold text-foreground truncate mb-1">
+                          {game.name}
+                        </p>
+                        <Badge
+                          className={`text-[10px] border ${GENRE_COLORS[game.genre]} bg-gaming-darker/80`}
+                        >
+                          {game.genre}
+                        </Badge>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </ScrollArea>
+              <div className="p-3 border-t border-white/5 shrink-0">
+                <p className="text-[10px] text-muted-foreground/50 text-center leading-relaxed">
+                  All games mentioned this session
+                </p>
+              </div>
+            </motion.aside>
+          )}
+        </AnimatePresence>
+
+        {/* Main chat area */}
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <ScrollArea className="flex-1 px-4 py-4">
+            <div className="max-w-3xl mx-auto flex flex-col gap-4">
+              {/* Quick prompts shown when only welcome message exists */}
+              {!hasUserMessages && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="pt-4"
+                >
+                  <div className="flex items-center gap-2 mb-3 justify-center">
+                    <Sparkles className="w-3.5 h-3.5 text-muted-foreground/50" />
+                    <span className="text-xs text-muted-foreground/60 tracking-wide">
+                      Try asking...
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {QUICK_PROMPTS.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => sendMessage(prompt)}
+                        data-ocid="chat.button"
+                        className="px-3 py-1.5 rounded-full text-xs font-medium border border-[oklch(0.82_0.18_200_/_0.25)] text-[oklch(0.82_0.18_200)] hover:bg-[oklch(0.82_0.18_200_/_0.1)] transition-all duration-150"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Messages */}
+              {messages.map((msg) => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3 }}
+                  className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}
+                >
+                  {msg.role === "ai" && (
+                    <div className="w-8 h-8 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.4)] flex items-center justify-center shrink-0 mt-0.5">
+                      <Bot className="w-3.5 h-3.5 neon-text-cyan" />
+                    </div>
+                  )}
+                  <div
+                    className={`max-w-[75%] flex flex-col gap-1 ${msg.role === "user" ? "items-end" : "items-start"}`}
+                  >
+                    <div
+                      className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+                        msg.role === "user"
+                          ? "bg-[oklch(0.82_0.18_200_/_0.12)] border border-[oklch(0.82_0.18_200_/_0.3)] rounded-tr-sm text-foreground"
+                          : "bg-[oklch(0.16_0.018_230)] border border-white/8 rounded-tl-sm text-foreground"
+                      }`}
+                    >
+                      {renderText(msg.text)}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground/50 px-1">
+                      {msg.timestamp}
+                    </span>
+                  </div>
+                </motion.div>
+              ))}
+
+              {/* Typing indicator */}
+              <AnimatePresence>
+                {isTyping && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    className="flex gap-3"
+                    data-ocid="chat.loading_state"
+                  >
+                    <div className="w-8 h-8 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.4)] flex items-center justify-center shrink-0">
+                      <Bot className="w-3.5 h-3.5 neon-text-cyan" />
+                    </div>
+                    <div className="bg-[oklch(0.16_0.018_230)] border border-white/8 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1.5">
+                      {[0, 1, 2].map((i) => (
+                        <motion.div
+                          key={i}
+                          className="w-2 h-2 rounded-full bg-[oklch(0.82_0.18_200_/_0.6)]"
+                          animate={{
+                            scale: [1, 1.4, 1],
+                            opacity: [0.5, 1, 0.5],
+                          }}
+                          transition={{
+                            duration: 0.8,
+                            repeat: Number.POSITIVE_INFINITY,
+                            delay: i * 0.18,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div ref={bottomRef} />
+            </div>
+          </ScrollArea>
+
+          {/* Input bar */}
+          <div
+            className="glass-panel border-t border-white/5 p-4 shrink-0"
+            data-ocid="chat.panel"
+          >
+            <div className="max-w-3xl mx-auto flex gap-3 items-end">
+              <div className="flex-1 relative">
+                <Textarea
+                  ref={inputRef}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask about any game... (Enter to send, Shift+Enter for new line)"
+                  rows={1}
+                  className="min-h-[44px] max-h-[120px] resize-none bg-[oklch(0.12_0.015_230)] border-[oklch(0.30_0.04_210)] text-foreground placeholder:text-muted-foreground/50 focus:border-[oklch(0.82_0.18_200)] focus:ring-[oklch(0.82_0.18_200_/_0.3)] rounded-xl pr-4 py-3 text-sm leading-relaxed"
+                  data-ocid="chat.input"
+                  style={{ overflowY: "auto" }}
+                />
+              </div>
+              <Button
+                onClick={() => sendMessage(inputText)}
+                disabled={!inputText.trim() || isTyping}
+                data-ocid="chat.submit_button"
+                className="h-[44px] w-[44px] p-0 rounded-xl bg-transparent neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] hover:shadow-neon-cyan-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                aria-label="Send message"
+              >
+                {isTyping ? (
+                  <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+              </Button>
+            </div>
+            <p className="text-center text-[10px] text-muted-foreground/40 mt-2">
+              Knows all 55 games across 8 genres · Session memory active
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // STAR RATING COMPONENT
 // ============================================================
 interface StarRatingProps {
@@ -1214,6 +1911,7 @@ export default function App() {
   // Navigation state
   const [activeSection, setActiveSection] = useState("home");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [activePage, setActivePage] = useState<"main" | "chat">("main");
 
   // AI Suggester
   const [suggestionInput, setSuggestionInput] = useState("");
@@ -1410,6 +2108,14 @@ export default function App() {
     { id: "ratings", label: "Ratings" },
   ];
 
+  const handleNavScroll = useCallback((id: string) => {
+    setActivePage("main");
+    setTimeout(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+    }, 50);
+    setMenuOpen(false);
+  }, []);
+
   return (
     <div className="relative min-h-screen bg-gaming-dark font-body">
       {/* Ambient background blobs */}
@@ -1432,7 +2138,7 @@ export default function App() {
         >
           <button
             type="button"
-            onClick={() => scrollTo("home")}
+            onClick={() => handleNavScroll("home")}
             className="flex items-center gap-2 group"
             data-ocid="nav.link"
           >
@@ -1458,10 +2164,10 @@ export default function App() {
               <button
                 key={link.id}
                 type="button"
-                onClick={() => scrollTo(link.id)}
+                onClick={() => handleNavScroll(link.id)}
                 data-ocid="nav.link"
                 className={`px-4 py-2 text-sm font-medium tracking-wide transition-all duration-200 rounded-md ${
-                  activeSection === link.id
+                  activePage === "main" && activeSection === link.id
                     ? "neon-text-cyan border-b-2 border-[oklch(0.82_0.18_200)]"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
@@ -1469,12 +2175,28 @@ export default function App() {
                 {link.label}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => {
+                setActivePage("chat");
+                setMenuOpen(false);
+              }}
+              data-ocid="nav.link"
+              className={`px-4 py-2 text-sm font-medium tracking-wide transition-all duration-200 rounded-md flex items-center gap-1.5 ${
+                activePage === "chat"
+                  ? "neon-text-cyan border-b-2 border-[oklch(0.82_0.18_200)]"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              Free Chat
+            </button>
           </div>
 
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => scrollTo("suggester")}
+              onClick={() => handleNavScroll("suggester")}
               data-ocid="nav.primary_button"
               className="hidden sm:flex items-center gap-2 px-5 py-2 rounded-full text-sm font-semibold neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.1)] transition-all duration-200"
             >
@@ -1509,9 +2231,9 @@ export default function App() {
                 <button
                   key={link.id}
                   type="button"
-                  onClick={() => scrollTo(link.id)}
+                  onClick={() => handleNavScroll(link.id)}
                   className={`px-4 py-3 text-left text-sm font-medium rounded-lg transition-all ${
-                    activeSection === link.id
+                    activePage === "main" && activeSection === link.id
                       ? "bg-[oklch(0.82_0.18_200_/_0.1)] neon-text-cyan"
                       : "text-muted-foreground hover:text-foreground hover:bg-white/5"
                   }`}
@@ -1519,859 +2241,894 @@ export default function App() {
                   {link.label}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setActivePage("chat");
+                  setMenuOpen(false);
+                }}
+                data-ocid="nav.link"
+                className={`px-4 py-3 text-left text-sm font-medium rounded-lg transition-all flex items-center gap-2 ${
+                  activePage === "chat"
+                    ? "bg-[oklch(0.82_0.18_200_/_0.1)] neon-text-cyan"
+                    : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+                }`}
+              >
+                <MessageSquare className="w-4 h-4" />
+                Free Chat
+              </button>
             </motion.div>
           )}
         </AnimatePresence>
       </header>
 
       <main className="pt-16">
-        {/* ===== HOME ===== */}
-        <section id="home" className="relative min-h-screen flex flex-col">
-          <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 py-20 md:py-28 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-            {/* Left */}
-            <motion.div
-              initial={{ opacity: 0, x: -40 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.7 }}
-              className="flex flex-col gap-6"
-            >
-              <div className="flex items-center gap-2">
-                <div className="h-px w-8 bg-[oklch(0.82_0.18_200)]" />
-                <span className="text-xs font-semibold tracking-[0.3em] neon-text-cyan uppercase">
-                  AI-Powered Gaming
-                </span>
-              </div>
-              <h1 className="font-orbitron text-4xl sm:text-5xl md:text-6xl font-black leading-tight tracking-tight text-foreground">
-                YOUR <span className="neon-text-cyan">AI GAME</span> SPECIALIST
-              </h1>
-              <p className="text-muted-foreground text-lg leading-relaxed">
-                Describe your mood, vibe, or preferences — our AI instantly
-                curates personalized game recommendations from a library of 55+
-                titles across every genre.
-              </p>
-              <div className="flex flex-wrap gap-4">
-                <button
-                  type="button"
-                  onClick={() => scrollTo("suggester")}
-                  data-ocid="home.primary_button"
-                  className="flex items-center gap-2 px-8 py-3.5 rounded-full font-semibold bg-[oklch(0.82_0.18_200)] text-gaming-darker hover:shadow-neon-cyan hover:scale-105 transition-all duration-200"
+        {activePage === "chat" ? (
+          <ChatPage onNavigate={() => setActivePage("main")} />
+        ) : (
+          <>
+            {/* ===== HOME ===== */}
+            <section id="home" className="relative min-h-screen flex flex-col">
+              <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 py-20 md:py-28 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+                {/* Left */}
+                <motion.div
+                  initial={{ opacity: 0, x: -40 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.7 }}
+                  className="flex flex-col gap-6"
                 >
-                  <Bot className="w-4 h-4" />
-                  Explore Games
-                </button>
-                <button
-                  type="button"
-                  onClick={() => scrollTo("pricing")}
-                  data-ocid="home.secondary_button"
-                  className="flex items-center gap-2 px-8 py-3.5 rounded-full font-semibold neon-border-cyan text-foreground hover:bg-[oklch(0.82_0.18_200_/_0.1)] transition-all duration-200"
-                >
-                  <CreditCard className="w-4 h-4" />
-                  View Plans
-                </button>
-              </div>
-              <div className="flex gap-8 pt-2">
-                {[
-                  { label: "Games", value: "55+" },
-                  { label: "Genres", value: "8" },
-                  { label: "AI Matches", value: "∞" },
-                ].map((stat) => (
-                  <div key={stat.label}>
-                    <div className="font-orbitron text-2xl font-bold neon-text-cyan">
-                      {stat.value}
-                    </div>
-                    <div className="text-xs text-muted-foreground tracking-wide uppercase mt-0.5">
-                      {stat.label}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-
-            {/* Right — decorative chat card */}
-            <motion.div
-              initial={{ opacity: 0, x: 40 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.7, delay: 0.15 }}
-              className="relative"
-            >
-              <div className="glass-panel neon-border-cyan rounded-2xl p-6 shadow-glass">
-                <div className="flex items-center gap-3 mb-5">
-                  <div className="w-8 h-8 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] flex items-center justify-center neon-border-cyan">
-                    <Bot className="w-4 h-4 neon-text-cyan" />
-                  </div>
-                  <div>
-                    <div className="font-orbitron text-xs font-bold neon-text-cyan">
-                      AI GAME CHAT
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Describe your mood...
-                    </div>
-                  </div>
-                  <div className="ml-auto flex gap-1 items-center">
-                    <div className="w-2 h-2 rounded-full bg-[oklch(0.82_0.18_200)] animate-pulse-neon" />
-                    <span className="text-xs text-muted-foreground">
-                      Online
+                  <div className="flex items-center gap-2">
+                    <div className="h-px w-8 bg-[oklch(0.82_0.18_200)]" />
+                    <span className="text-xs font-semibold tracking-[0.3em] neon-text-cyan uppercase">
+                      AI-Powered Gaming
                     </span>
                   </div>
-                </div>
-                <div className="flex flex-col gap-3 mb-5">
-                  <div className="flex justify-end">
-                    <div className="bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.25)] rounded-xl rounded-tr-sm px-4 py-2.5 max-w-[80%]">
-                      <p className="text-sm text-foreground">
-                        "I want something relaxing but still engaging"
-                      </p>
-                    </div>
+                  <h1 className="font-orbitron text-4xl sm:text-5xl md:text-6xl font-black leading-tight tracking-tight text-foreground">
+                    YOUR <span className="neon-text-cyan">AI GAME</span>{" "}
+                    SPECIALIST
+                  </h1>
+                  <p className="text-muted-foreground text-lg leading-relaxed">
+                    Describe your mood, vibe, or preferences — our AI instantly
+                    curates personalized game recommendations from a library of
+                    55+ titles across every genre.
+                  </p>
+                  <div className="flex flex-wrap gap-4">
+                    <button
+                      type="button"
+                      onClick={() => scrollTo("suggester")}
+                      data-ocid="home.primary_button"
+                      className="flex items-center gap-2 px-8 py-3.5 rounded-full font-semibold bg-[oklch(0.82_0.18_200)] text-gaming-darker hover:shadow-neon-cyan hover:scale-105 transition-all duration-200"
+                    >
+                      <Bot className="w-4 h-4" />
+                      Explore Games
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scrollTo("pricing")}
+                      data-ocid="home.secondary_button"
+                      className="flex items-center gap-2 px-8 py-3.5 rounded-full font-semibold neon-border-cyan text-foreground hover:bg-[oklch(0.82_0.18_200_/_0.1)] transition-all duration-200"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      View Plans
+                    </button>
                   </div>
-                  <div className="flex justify-start">
-                    <div className="bg-[oklch(0.16_0.018_230)] border border-white/10 rounded-xl rounded-tl-sm px-4 py-2.5 max-w-[80%]">
-                      <p className="text-xs neon-text-cyan font-semibold mb-1">
-                        AI Recommends:
-                      </p>
-                      <p className="text-sm text-foreground">
-                        🌾 <strong>Farm Frontier</strong> — Cozy farming sim
-                        with relaxing gameplay and deep progression.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex justify-end">
-                    <div className="bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.25)] rounded-xl rounded-tr-sm px-4 py-2.5 max-w-[80%]">
-                      <p className="text-sm text-foreground">
-                        "Show me scary horror games"
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex justify-start">
-                    <div className="bg-[oklch(0.16_0.018_230)] border border-white/10 rounded-xl rounded-tl-sm px-4 py-2.5 max-w-[80%]">
-                      <p className="text-xs neon-text-cyan font-semibold mb-1">
-                        AI Recommends:
-                      </p>
-                      <p className="text-sm text-foreground">
-                        👻 <strong>Void Crawler</strong> — Space horror
-                        masterpiece. Alien creatures hunt by sound.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <div className="flex-1 bg-[oklch(0.12_0.015_230)] border border-[oklch(0.82_0.18_200_/_0.25)] rounded-full px-4 py-2.5 text-sm text-muted-foreground">
-                    Ask about any game...
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => scrollTo("suggester")}
-                    className="px-4 py-2.5 rounded-full text-xs font-bold neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] transition-all"
-                  >
-                    ASK AI
-                  </button>
-                </div>
-              </div>
-              <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 w-2/3 h-12 bg-[oklch(0.82_0.18_200_/_0.15)] blur-xl rounded-full" />
-            </motion.div>
-          </div>
-
-          {/* Feature highlights */}
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-20">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {[
-                {
-                  icon: <Brain className="w-6 h-6" />,
-                  title: "AI SUGGESTIONS",
-                  desc: "Keyword-smart AI matches your preferences to the perfect games from 55+ titles across 8 genres.",
-                  border: "neon-border-cyan",
-                },
-                {
-                  icon: <ImageIcon className="w-6 h-6" />,
-                  title: "IMAGE UPLOAD",
-                  desc: "Upload up to 5 game screenshots or artwork daily. Track your uploads and showcase your favorites.",
-                  border: "neon-border-purple",
-                },
-                {
-                  icon: <Trophy className="w-6 h-6" />,
-                  title: "COMMUNITY RATINGS",
-                  desc: "Rate and discover top-rated games. Your feedback shapes the gaming community.",
-                  border: "neon-border-cyan",
-                },
-              ].map((feature, i) => (
-                <motion.div
-                  key={feature.title}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.5, delay: 0.4 + i * 0.15 }}
-                  className={`glass-panel ${feature.border} rounded-xl p-6 flex gap-4 items-start`}
-                >
-                  <div className="mt-1 neon-text-cyan">{feature.icon}</div>
-                  <div>
-                    <h3 className="font-orbitron text-sm font-bold text-foreground tracking-wider mb-2">
-                      {feature.title}
-                    </h3>
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      {feature.desc}
-                    </p>
+                  <div className="flex gap-8 pt-2">
+                    {[
+                      { label: "Games", value: "55+" },
+                      { label: "Genres", value: "8" },
+                      { label: "AI Matches", value: "∞" },
+                    ].map((stat) => (
+                      <div key={stat.label}>
+                        <div className="font-orbitron text-2xl font-bold neon-text-cyan">
+                          {stat.value}
+                        </div>
+                        <div className="text-xs text-muted-foreground tracking-wide uppercase mt-0.5">
+                          {stat.label}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </motion.div>
-              ))}
-            </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={() => scrollTo("suggester")}
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 text-muted-foreground/50 hover:text-muted-foreground transition-colors animate-float"
-            aria-label="Scroll to AI Suggester"
-          >
-            <span className="text-xs tracking-widest uppercase">Scroll</span>
-            <ChevronDown className="w-4 h-4" />
-          </button>
-        </section>
-
-        {/* ===== FEATURED RECOMMENDATIONS ===== */}
-        <section className="py-20 max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="text-center mb-12">
-            <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
-              AI Game <span className="neon-text-cyan">Recommendations</span>
-            </h2>
-            <p className="text-muted-foreground">
-              Top picks curated by our AI engine
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {FEATURED_GAMES.map(({ game, img }, idx) => (
-              <motion.div
-                key={game.id}
-                initial={{ opacity: 0, y: 30 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: idx * 0.1 }}
-                className={`glass-panel rounded-2xl overflow-hidden border ${
-                  idx % 2 === 0
-                    ? "border-[oklch(0.82_0.18_200_/_0.25)]"
-                    : "border-[oklch(0.65_0.22_290_/_0.25)]"
-                } hover:scale-[1.02] transition-transform duration-300 shadow-glass flex flex-col`}
-                data-ocid={`featured.item.${idx + 1}`}
-              >
-                <div className="relative h-40 overflow-hidden">
-                  <img
-                    src={img}
-                    alt={game.name}
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-gaming-card via-transparent to-transparent" />
-                  <Badge
-                    className={`absolute top-3 left-3 text-xs border ${
-                      GENRE_COLORS[game.genre]
-                    } bg-gaming-darker/80 backdrop-blur-sm`}
-                  >
-                    {game.genre}
-                  </Badge>
-                </div>
-                <div className="p-5 flex flex-col flex-1">
-                  <h3 className="font-orbitron text-sm font-bold text-foreground tracking-wide uppercase mb-2">
-                    {game.name}
-                  </h3>
-                  <p className="text-sm text-muted-foreground leading-relaxed flex-1 mb-3">
-                    {game.description}
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <StarRating
-                      value={Math.round(game.rating)}
-                      readonly
-                      size="sm"
-                    />
-                    <span className="text-xs neon-text-cyan font-semibold">
-                      {game.rating.toFixed(1)}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => scrollTo("suggester")}
-                    className={`mt-4 py-2 text-xs font-semibold tracking-wider uppercase rounded-lg transition-all ${
-                      idx % 2 === 0
-                        ? "neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.1)]"
-                        : "neon-border-purple text-[oklch(0.65_0.22_290)] hover:bg-[oklch(0.65_0.22_290_/_0.1)]"
-                    }`}
-                    data-ocid={`featured.edit_button.${idx + 1}`}
-                  >
-                    Find Similar Games
-                  </button>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </section>
-
-        {/* ===== AI SUGGESTER ===== */}
-        <section
-          id="suggester"
-          className="py-20 max-w-7xl mx-auto px-4 sm:px-6"
-        >
-          <div className="text-center mb-12">
-            <div className="inline-flex items-center gap-2 mb-4">
-              <Bot className="w-6 h-6 neon-text-cyan" />
-              <span className="font-orbitron text-xs font-bold tracking-[0.3em] uppercase neon-text-cyan">
-                AI Engine
-              </span>
-            </div>
-            <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
-              AI Game <span className="neon-text-cyan">Suggester</span>
-            </h2>
-            <p className="text-muted-foreground max-w-xl mx-auto">
-              Tell us what you're in the mood for — action, horror, chill, funny
-              — and our AI will find your perfect match.
-            </p>
-          </div>
-
-          <div className="max-w-3xl mx-auto">
-            <div className="glass-panel neon-border-cyan rounded-2xl p-6 shadow-glass">
-              <Textarea
-                value={suggestionInput}
-                onChange={(e) => setSuggestionInput(e.target.value)}
-                placeholder="Describe your mood, preferences, or the type of game you're looking for... e.g. 'I like fast-paced action games' or 'something relaxing to unwind'"
-                className="min-h-[120px] bg-[oklch(0.12_0.015_230)] border-[oklch(0.30_0.04_210)] text-foreground placeholder:text-muted-foreground/50 focus:border-[oklch(0.82_0.18_200)] focus:ring-[oklch(0.82_0.18_200_/_0.3)] rounded-xl resize-none text-sm"
-                data-ocid="suggester.textarea"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
-                    handleGetSuggestions();
-                }}
-              />
-              <div className="flex items-center justify-between mt-4">
-                <span className="text-xs text-muted-foreground">
-                  Requests:{" "}
-                  <span className="neon-text-cyan font-semibold">
-                    {suggestionCount}
-                  </span>
-                </span>
-                <Button
-                  onClick={handleGetSuggestions}
-                  disabled={isLoadingSuggestions || !suggestionInput.trim()}
-                  data-ocid="suggester.submit_button"
-                  className="px-8 py-2.5 rounded-full font-semibold tracking-wider uppercase text-xs bg-transparent neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] hover:shadow-neon-cyan-sm transition-all duration-200 disabled:opacity-50"
-                >
-                  {isLoadingSuggestions ? (
-                    <span className="flex items-center gap-2">
-                      <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                      Analyzing...
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <Zap className="w-3.5 h-3.5" />
-                      Get Suggestions
-                    </span>
-                  )}
-                </Button>
-              </div>
-            </div>
-
-            <AnimatePresence mode="wait">
-              {suggestions.length > 0 && (
+                {/* Right — decorative chat card */}
                 <motion.div
-                  key={suggestionCount}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.4 }}
-                  className="mt-8 flex flex-col gap-5"
-                  data-ocid="suggester.list"
+                  initial={{ opacity: 0, x: 40 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.7, delay: 0.15 }}
+                  className="relative"
                 >
-                  <h3 className="font-orbitron text-sm font-bold tracking-widest uppercase text-muted-foreground">
-                    Top Matches —{" "}
-                    <span className="neon-text-cyan">
-                      {suggestions.length} games found
-                    </span>
-                  </h3>
-                  {suggestions.map((match, idx) => (
+                  <div className="glass-panel neon-border-cyan rounded-2xl p-6 shadow-glass">
+                    <div className="flex items-center gap-3 mb-5">
+                      <div className="w-8 h-8 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] flex items-center justify-center neon-border-cyan">
+                        <Bot className="w-4 h-4 neon-text-cyan" />
+                      </div>
+                      <div>
+                        <div className="font-orbitron text-xs font-bold neon-text-cyan">
+                          AI GAME CHAT
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Describe your mood...
+                        </div>
+                      </div>
+                      <div className="ml-auto flex gap-1 items-center">
+                        <div className="w-2 h-2 rounded-full bg-[oklch(0.82_0.18_200)] animate-pulse-neon" />
+                        <span className="text-xs text-muted-foreground">
+                          Online
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-3 mb-5">
+                      <div className="flex justify-end">
+                        <div className="bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.25)] rounded-xl rounded-tr-sm px-4 py-2.5 max-w-[80%]">
+                          <p className="text-sm text-foreground">
+                            "I want something relaxing but still engaging"
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex justify-start">
+                        <div className="bg-[oklch(0.16_0.018_230)] border border-white/10 rounded-xl rounded-tl-sm px-4 py-2.5 max-w-[80%]">
+                          <p className="text-xs neon-text-cyan font-semibold mb-1">
+                            AI Recommends:
+                          </p>
+                          <p className="text-sm text-foreground">
+                            🌾 <strong>Farm Frontier</strong> — Cozy farming sim
+                            with relaxing gameplay and deep progression.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex justify-end">
+                        <div className="bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.25)] rounded-xl rounded-tr-sm px-4 py-2.5 max-w-[80%]">
+                          <p className="text-sm text-foreground">
+                            "Show me scary horror games"
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex justify-start">
+                        <div className="bg-[oklch(0.16_0.018_230)] border border-white/10 rounded-xl rounded-tl-sm px-4 py-2.5 max-w-[80%]">
+                          <p className="text-xs neon-text-cyan font-semibold mb-1">
+                            AI Recommends:
+                          </p>
+                          <p className="text-sm text-foreground">
+                            👻 <strong>Void Crawler</strong> — Space horror
+                            masterpiece. Alien creatures hunt by sound.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1 bg-[oklch(0.12_0.015_230)] border border-[oklch(0.82_0.18_200_/_0.25)] rounded-full px-4 py-2.5 text-sm text-muted-foreground">
+                        Ask about any game...
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => scrollTo("suggester")}
+                        className="px-4 py-2.5 rounded-full text-xs font-bold neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] transition-all"
+                      >
+                        ASK AI
+                      </button>
+                    </div>
+                  </div>
+                  <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 w-2/3 h-12 bg-[oklch(0.82_0.18_200_/_0.15)] blur-xl rounded-full" />
+                </motion.div>
+              </div>
+
+              {/* Feature highlights */}
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-20">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {[
+                    {
+                      icon: <Brain className="w-6 h-6" />,
+                      title: "AI SUGGESTIONS",
+                      desc: "Keyword-smart AI matches your preferences to the perfect games from 55+ titles across 8 genres.",
+                      border: "neon-border-cyan",
+                    },
+                    {
+                      icon: <ImageIcon className="w-6 h-6" />,
+                      title: "IMAGE UPLOAD",
+                      desc: "Upload up to 5 game screenshots or artwork daily. Track your uploads and showcase your favorites.",
+                      border: "neon-border-purple",
+                    },
+                    {
+                      icon: <Trophy className="w-6 h-6" />,
+                      title: "COMMUNITY RATINGS",
+                      desc: "Rate and discover top-rated games. Your feedback shapes the gaming community.",
+                      border: "neon-border-cyan",
+                    },
+                  ].map((feature, i) => (
                     <motion.div
-                      key={match.game.id}
-                      initial={{ opacity: 0, x: -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: idx * 0.08 }}
-                      className="glass-panel rounded-xl p-5 border border-[oklch(0.82_0.18_200_/_0.15)] hover:border-[oklch(0.82_0.18_200_/_0.35)] transition-all duration-200"
-                      data-ocid={`suggester.item.${idx + 1}`}
+                      key={feature.title}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.5, delay: 0.4 + i * 0.15 }}
+                      className={`glass-panel ${feature.border} rounded-xl p-6 flex gap-4 items-start`}
                     >
-                      <div className="flex flex-wrap items-start gap-3 mb-3">
-                        <h4 className="font-orbitron text-sm font-bold text-foreground tracking-wide uppercase flex-1">
-                          {match.game.name}
-                        </h4>
-                        <Badge
-                          className={`text-xs border ${GENRE_COLORS[match.game.genre]} bg-gaming-darker/80 shrink-0`}
-                        >
-                          {match.game.genre}
-                        </Badge>
-                      </div>
-                      <p className="text-sm text-muted-foreground mb-3 leading-relaxed">
-                        {match.game.description}
-                      </p>
-                      <div className="flex items-center gap-3 mb-3">
-                        <StarRating
-                          value={Math.round(match.game.rating)}
-                          readonly
-                          size="sm"
-                        />
-                        <span className="text-xs text-muted-foreground">
-                          {match.game.rating.toFixed(1)}/5.0
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          ({match.game.releaseYear})
-                        </span>
-                      </div>
-                      <div className="bg-[oklch(0.82_0.18_200_/_0.06)] border border-[oklch(0.82_0.18_200_/_0.2)] rounded-lg px-3 py-2">
-                        <span className="text-xs font-semibold neon-text-cyan mr-2">
-                          Why this matches:
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {match.whyMatches}
-                        </span>
+                      <div className="mt-1 neon-text-cyan">{feature.icon}</div>
+                      <div>
+                        <h3 className="font-orbitron text-sm font-bold text-foreground tracking-wider mb-2">
+                          {feature.title}
+                        </h3>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {feature.desc}
+                        </p>
                       </div>
                     </motion.div>
                   ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {suggestions.length === 0 &&
-              suggestionCount > 0 &&
-              !isLoadingSuggestions && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="mt-8 text-center text-muted-foreground py-10"
-                  data-ocid="suggester.empty_state"
-                >
-                  <Bot className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                  <p className="text-sm">
-                    No matches found. Try different keywords!
-                  </p>
-                  <p className="text-xs mt-1 opacity-60">
-                    Hint: try "action", "horror", "racing", "chill", "funny"
-                  </p>
-                </motion.div>
-              )}
-          </div>
-        </section>
-
-        {/* ===== UPLOAD ===== */}
-        <section id="upload" className="py-20 max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="text-center mb-12">
-            <div className="inline-flex items-center gap-2 mb-4">
-              <ImageIcon className="w-6 h-6 neon-text-cyan" />
-              <span className="font-orbitron text-xs font-bold tracking-[0.3em] uppercase neon-text-cyan">
-                File Hub
-              </span>
-            </div>
-            <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
-              Optimize Your <span className="neon-text-cyan">Files</span>
-            </h2>
-            <p className="text-muted-foreground">
-              Upload game screenshots, artwork, or images — up to 5 per day.
-            </p>
-          </div>
-
-          <div className="max-w-2xl mx-auto">
-            <div className="flex items-center justify-between mb-4">
-              <span className="font-orbitron text-sm font-bold tracking-wide">
-                <span className="neon-text-cyan">{uploadCount}</span>
-                <span className="text-muted-foreground">
-                  /5 uploads used today
-                </span>
-              </span>
-              {uploadCount >= 5 && (
-                <span
-                  className="text-xs text-red-400 font-medium"
-                  data-ocid="upload.error_state"
-                >
-                  Daily limit reached
-                </span>
-              )}
-            </div>
-
-            <div className="h-1.5 bg-muted/30 rounded-full mb-6 overflow-hidden">
-              <motion.div
-                className="h-full rounded-full bg-gradient-to-r from-[oklch(0.82_0.18_200)] to-[oklch(0.65_0.22_290)]"
-                initial={{ width: 0 }}
-                animate={{ width: `${(uploadCount / 5) * 100}%` }}
-                transition={{ duration: 0.4 }}
-              />
-            </div>
-
-            {/* Drop Zone */}
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-              onClick={() => uploadCount < 5 && fileInputRef.current?.click()}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  if (uploadCount < 5) fileInputRef.current?.click();
-                }
-              }}
-              tabIndex={uploadCount >= 5 ? -1 : 0}
-              data-ocid="upload.dropzone"
-              className={`relative rounded-2xl border-2 border-dashed p-12 text-center transition-all duration-200 ${
-                uploadCount >= 5
-                  ? "border-muted/30 opacity-50 cursor-not-allowed"
-                  : isDragging
-                    ? "border-[oklch(0.82_0.18_200)] bg-[oklch(0.82_0.18_200_/_0.08)] cursor-copy shadow-neon-cyan"
-                    : "border-[oklch(0.82_0.18_200_/_0.3)] hover:border-[oklch(0.82_0.18_200_/_0.6)] hover:bg-[oklch(0.82_0.18_200_/_0.04)] cursor-pointer"
-              }`}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="sr-only"
-                onChange={(e) => handleFiles(e.target.files)}
-                aria-label="Upload images"
-              />
-              <div className="flex flex-col items-center gap-4">
-                <div
-                  className={`w-16 h-16 rounded-full flex items-center justify-center transition-all ${
-                    isDragging
-                      ? "neon-glow-cyan bg-[oklch(0.82_0.18_200_/_0.15)]"
-                      : "bg-[oklch(0.16_0.018_230)] border border-[oklch(0.82_0.18_200_/_0.2)]"
-                  }`}
-                >
-                  <Upload className="w-7 h-7 neon-text-cyan" />
                 </div>
-                {uploadCount >= 5 ? (
-                  <div>
-                    <p className="font-semibold text-muted-foreground">
-                      Daily limit reached
-                    </p>
-                    <p className="text-sm text-muted-foreground/60 mt-1">
-                      Come back tomorrow!
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <p className="font-semibold text-foreground">
-                      {isDragging
-                        ? "Drop your images here"
-                        : "Drag & drop images here"}
-                    </p>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      or click to browse your files
-                    </p>
-                    <p className="text-xs text-muted-foreground/60 mt-2">
-                      PNG, JPG, GIF, WebP up to 10MB each
-                    </p>
-                  </div>
-                )}
-                {uploadCount < 5 && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      fileInputRef.current?.click();
-                    }}
-                    data-ocid="upload.upload_button"
-                    className="px-6 py-2 rounded-full text-sm font-semibold neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] transition-all"
-                  >
-                    Upload Files
-                  </button>
-                )}
               </div>
-            </div>
 
-            {uploadedImages.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mt-6 grid grid-cols-3 sm:grid-cols-5 gap-3"
-                data-ocid="upload.list"
+              <button
+                type="button"
+                onClick={() => scrollTo("suggester")}
+                className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 text-muted-foreground/50 hover:text-muted-foreground transition-colors animate-float"
+                aria-label="Scroll to AI Suggester"
               >
-                {uploadedImages.map((url, idx) => (
-                  <div
-                    key={url}
-                    className="relative group rounded-xl overflow-hidden aspect-square"
-                    data-ocid={`upload.item.${idx + 1}`}
-                  >
-                    <img
-                      src={url}
-                      alt={`Upload ${idx + 1}`}
-                      className="w-full h-full object-cover"
-                    />
-                    <div className="absolute inset-0 bg-gaming-darker/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                      <Check className="w-5 h-5 text-[oklch(0.82_0.18_200)]" />
-                    </div>
-                  </div>
-                ))}
-              </motion.div>
-            )}
-          </div>
-        </section>
+                <span className="text-xs tracking-widest uppercase">
+                  Scroll
+                </span>
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </section>
 
-        {/* ===== PRICING + RATINGS ===== */}
-        <section id="pricing" className="py-20 max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="text-center mb-12">
-            <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
-              Plans & <span className="neon-text-cyan">Community</span>
-            </h2>
-            <p className="text-muted-foreground">
-              Level up with a subscription or share your experience
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Pricing card */}
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.5 }}
-              className="glass-panel rounded-2xl overflow-hidden neon-border-cyan shadow-glass"
-              data-ocid="pricing.card"
-            >
-              <div className="p-8">
-                <div className="inline-flex items-center gap-2 bg-[oklch(0.82_0.18_200_/_0.1)] border border-[oklch(0.82_0.18_200_/_0.3)] rounded-full px-4 py-1.5 mb-6">
-                  <Rocket className="w-3.5 h-3.5 neon-text-cyan" />
-                  <span className="font-orbitron text-xs font-bold neon-text-cyan tracking-widest">
-                    2-MONTH PACKAGE
-                  </span>
-                </div>
-                <div className="mb-6">
-                  <div className="flex items-end gap-2">
-                    <span className="font-orbitron text-6xl font-black neon-text-cyan leading-none">
-                      $1
-                    </span>
-                    <span className="font-orbitron text-2xl font-bold text-muted-foreground mb-1">
-                      .00
-                    </span>
-                  </div>
-                  <p className="text-muted-foreground text-sm mt-1">
-                    ₹92 (Indian Rupees) · Billed once
-                  </p>
-                </div>
-                <ul className="flex flex-col gap-3 mb-8">
-                  {[
-                    "Unlimited Game Suggestions",
-                    "5 Daily Image Uploads",
-                    "Priority Support",
-                    "Early Access to New Features",
-                    "Exclusive Game Deals & Alerts",
-                  ].map((feature) => (
-                    <li
-                      key={feature}
-                      className="flex items-center gap-3 text-sm text-foreground"
-                    >
-                      <div className="w-5 h-5 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.4)] flex items-center justify-center shrink-0">
-                        <Check className="w-3 h-3 neon-text-cyan" />
-                      </div>
-                      {feature}
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  type="button"
-                  onClick={handleSubscribe}
-                  disabled={subscribing}
-                  data-ocid="pricing.submit_button"
-                  className="w-full py-3.5 rounded-full font-orbitron text-sm font-bold tracking-widest uppercase neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] hover:shadow-neon-cyan transition-all duration-200 disabled:opacity-60"
-                >
-                  {subscribing ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                      Processing...
-                    </span>
-                  ) : (
-                    <span className="flex items-center justify-center gap-2">
-                      <CreditCard className="w-4 h-4" />
-                      Subscribe Now
-                    </span>
-                  )}
-                </button>
-                <div className="flex items-center justify-center gap-2 mt-4">
-                  <Shield className="w-3.5 h-3.5 text-muted-foreground/60" />
-                  <p className="text-xs text-muted-foreground/60 text-center">
-                    Payment processing will be enabled once Stripe is connected
-                  </p>
-                </div>
-              </div>
-            </motion.div>
-
-            {/* Ratings card */}
-            <motion.div
-              id="ratings"
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.5, delay: 0.1 }}
-              className="glass-panel rounded-2xl overflow-hidden neon-border-purple shadow-glass"
-              data-ocid="ratings.card"
-            >
-              <div className="p-8">
-                <div className="inline-flex items-center gap-2 bg-[oklch(0.65_0.22_290_/_0.1)] border border-[oklch(0.65_0.22_290_/_0.3)] rounded-full px-4 py-1.5 mb-6">
-                  <Star className="w-3.5 h-3.5 text-[oklch(0.65_0.22_290)]" />
-                  <span className="font-orbitron text-xs font-bold text-[oklch(0.65_0.22_290)] tracking-widest">
-                    COMMUNITY REVIEW
-                  </span>
-                </div>
-                <div className="flex items-end gap-4 mb-8">
-                  <div>
-                    <div className="font-orbitron text-6xl font-black neon-text-cyan leading-none">
-                      {numRatings > 0 ? avgRating.toFixed(1) : "—"}
-                    </div>
-                    <div className="text-muted-foreground text-sm mt-1">
-                      out of 5.0
-                    </div>
-                  </div>
-                  <div className="flex flex-col gap-1 pb-1">
-                    <StarRating
-                      value={numRatings > 0 ? Math.round(avgRating) : 0}
-                      readonly
-                      size="md"
-                    />
-                    <span className="text-xs text-muted-foreground">
-                      {numRatings > 0
-                        ? `${numRatings} rating${numRatings !== 1 ? "s" : ""}`
-                        : "No ratings yet"}
-                    </span>
-                  </div>
-                </div>
-                <div className="border-t border-white/5 pt-6">
-                  <p className="font-orbitron text-sm font-bold tracking-widest uppercase text-foreground mb-4">
-                    Rate This Website
-                  </p>
-                  <p className="text-sm text-muted-foreground mb-5">
-                    How was your experience? Your feedback helps us improve!
-                  </p>
-                  <div className="mb-6">
-                    <StarRating
-                      value={selectedStars}
-                      onChange={setSelectedStars}
-                      size="lg"
-                    />
-                    {selectedStars > 0 && (
-                      <motion.p
-                        initial={{ opacity: 0, y: 4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="text-xs neon-text-cyan mt-2"
-                      >
-                        You selected: {selectedStars} star
-                        {selectedStars !== 1 ? "s" : ""}
-                      </motion.p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => submitRating(selectedStars, false)}
-                    disabled={ratingSubmitting || selectedStars === 0}
-                    data-ocid="ratings.submit_button"
-                    className="w-full py-3 rounded-full font-orbitron text-sm font-bold tracking-widest uppercase border border-[oklch(0.65_0.22_290_/_0.5)] text-[oklch(0.65_0.22_290)] hover:bg-[oklch(0.65_0.22_290_/_0.15)] hover:shadow-neon-purple-sm transition-all duration-200 disabled:opacity-50"
-                  >
-                    {ratingSubmitting ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                        Submitting...
-                      </span>
-                    ) : (
-                      "Submit Rating"
-                    )}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        </section>
-
-        {/* ===== FOOTER ===== */}
-        <footer className="border-t border-white/5 glass-panel py-12">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
-              <div>
-                <div className="flex items-center gap-2 mb-3">
-                  <img
-                    src="/assets/generated/playsense-logo-transparent.dim_80x80.png"
-                    alt="PLAY SENSE AI logo"
-                    style={{
-                      height: "32px",
-                      width: "auto",
-                      filter: "drop-shadow(0 0 8px #00E5FF)",
-                    }}
-                  />
-                  <span className="font-orbitron text-xs font-bold tracking-widest text-foreground">
-                    PLAY SENSE AI
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  AI-powered game discovery. Find your perfect game based on
-                  your mood and preferences.
+            {/* ===== FEATURED RECOMMENDATIONS ===== */}
+            <section className="py-20 max-w-7xl mx-auto px-4 sm:px-6">
+              <div className="text-center mb-12">
+                <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
+                  AI Game{" "}
+                  <span className="neon-text-cyan">Recommendations</span>
+                </h2>
+                <p className="text-muted-foreground">
+                  Top picks curated by our AI engine
                 </p>
               </div>
-              <div>
-                <h4 className="font-orbitron text-xs font-bold tracking-widest uppercase text-foreground mb-4">
-                  Quick Links
-                </h4>
-                <ul className="flex flex-col gap-2">
-                  {navLinks.map((link) => (
-                    <li key={link.id}>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {FEATURED_GAMES.map(({ game, img }, idx) => (
+                  <motion.div
+                    key={game.id}
+                    initial={{ opacity: 0, y: 30 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ duration: 0.5, delay: idx * 0.1 }}
+                    className={`glass-panel rounded-2xl overflow-hidden border ${
+                      idx % 2 === 0
+                        ? "border-[oklch(0.82_0.18_200_/_0.25)]"
+                        : "border-[oklch(0.65_0.22_290_/_0.25)]"
+                    } hover:scale-[1.02] transition-transform duration-300 shadow-glass flex flex-col`}
+                    data-ocid={`featured.item.${idx + 1}`}
+                  >
+                    <div className="relative h-40 overflow-hidden">
+                      <img
+                        src={img}
+                        alt={game.name}
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-gaming-card via-transparent to-transparent" />
+                      <Badge
+                        className={`absolute top-3 left-3 text-xs border ${
+                          GENRE_COLORS[game.genre]
+                        } bg-gaming-darker/80 backdrop-blur-sm`}
+                      >
+                        {game.genre}
+                      </Badge>
+                    </div>
+                    <div className="p-5 flex flex-col flex-1">
+                      <h3 className="font-orbitron text-sm font-bold text-foreground tracking-wide uppercase mb-2">
+                        {game.name}
+                      </h3>
+                      <p className="text-sm text-muted-foreground leading-relaxed flex-1 mb-3">
+                        {game.description}
+                      </p>
+                      <div className="flex items-center justify-between">
+                        <StarRating
+                          value={Math.round(game.rating)}
+                          readonly
+                          size="sm"
+                        />
+                        <span className="text-xs neon-text-cyan font-semibold">
+                          {game.rating.toFixed(1)}
+                        </span>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => scrollTo(link.id)}
-                        className="text-sm text-muted-foreground hover:neon-text-cyan transition-colors"
+                        onClick={() => scrollTo("suggester")}
+                        className={`mt-4 py-2 text-xs font-semibold tracking-wider uppercase rounded-lg transition-all ${
+                          idx % 2 === 0
+                            ? "neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.1)]"
+                            : "neon-border-purple text-[oklch(0.65_0.22_290)] hover:bg-[oklch(0.65_0.22_290_/_0.1)]"
+                        }`}
+                        data-ocid={`featured.edit_button.${idx + 1}`}
                       >
-                        {link.label}
+                        Find Similar Games
                       </button>
-                    </li>
-                  ))}
-                </ul>
+                    </div>
+                  </motion.div>
+                ))}
               </div>
-              <div>
-                <h4 className="font-orbitron text-xs font-bold tracking-widest uppercase text-foreground mb-4">
-                  Features
-                </h4>
-                <ul className="flex flex-col gap-2">
-                  {[
-                    {
-                      icon: <Bot className="w-3.5 h-3.5" />,
-                      label: "AI Suggestions",
-                    },
-                    {
-                      icon: <ImageIcon className="w-3.5 h-3.5" />,
-                      label: "Image Upload",
-                    },
-                    {
-                      icon: <CreditCard className="w-3.5 h-3.5" />,
-                      label: "Subscription",
-                    },
-                    {
-                      icon: <Star className="w-3.5 h-3.5" />,
-                      label: "Ratings",
-                    },
-                  ].map(({ icon, label }) => (
-                    <li
-                      key={label}
-                      className="flex items-center gap-2 text-sm text-muted-foreground"
+            </section>
+
+            {/* ===== AI SUGGESTER ===== */}
+            <section
+              id="suggester"
+              className="py-20 max-w-7xl mx-auto px-4 sm:px-6"
+            >
+              <div className="text-center mb-12">
+                <div className="inline-flex items-center gap-2 mb-4">
+                  <Bot className="w-6 h-6 neon-text-cyan" />
+                  <span className="font-orbitron text-xs font-bold tracking-[0.3em] uppercase neon-text-cyan">
+                    AI Engine
+                  </span>
+                </div>
+                <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
+                  AI Game <span className="neon-text-cyan">Suggester</span>
+                </h2>
+                <p className="text-muted-foreground max-w-xl mx-auto">
+                  Tell us what you're in the mood for — action, horror, chill,
+                  funny — and our AI will find your perfect match.
+                </p>
+              </div>
+
+              <div className="max-w-3xl mx-auto">
+                <div className="glass-panel neon-border-cyan rounded-2xl p-6 shadow-glass">
+                  <Textarea
+                    value={suggestionInput}
+                    onChange={(e) => setSuggestionInput(e.target.value)}
+                    placeholder="Describe your mood, preferences, or the type of game you're looking for... e.g. 'I like fast-paced action games' or 'something relaxing to unwind'"
+                    className="min-h-[120px] bg-[oklch(0.12_0.015_230)] border-[oklch(0.30_0.04_210)] text-foreground placeholder:text-muted-foreground/50 focus:border-[oklch(0.82_0.18_200)] focus:ring-[oklch(0.82_0.18_200_/_0.3)] rounded-xl resize-none text-sm"
+                    data-ocid="suggester.textarea"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                        handleGetSuggestions();
+                    }}
+                  />
+                  <div className="flex items-center justify-between mt-4">
+                    <span className="text-xs text-muted-foreground">
+                      Requests:{" "}
+                      <span className="neon-text-cyan font-semibold">
+                        {suggestionCount}
+                      </span>
+                    </span>
+                    <Button
+                      onClick={handleGetSuggestions}
+                      disabled={isLoadingSuggestions || !suggestionInput.trim()}
+                      data-ocid="suggester.submit_button"
+                      className="px-8 py-2.5 rounded-full font-semibold tracking-wider uppercase text-xs bg-transparent neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] hover:shadow-neon-cyan-sm transition-all duration-200 disabled:opacity-50"
                     >
-                      <span className="neon-text-cyan">{icon}</span>
-                      {label}
-                    </li>
-                  ))}
-                </ul>
+                      {isLoadingSuggestions ? (
+                        <span className="flex items-center gap-2">
+                          <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                          Analyzing...
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-2">
+                          <Zap className="w-3.5 h-3.5" />
+                          Get Suggestions
+                        </span>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                <AnimatePresence mode="wait">
+                  {suggestions.length > 0 && (
+                    <motion.div
+                      key={suggestionCount}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.4 }}
+                      className="mt-8 flex flex-col gap-5"
+                      data-ocid="suggester.list"
+                    >
+                      <h3 className="font-orbitron text-sm font-bold tracking-widest uppercase text-muted-foreground">
+                        Top Matches —{" "}
+                        <span className="neon-text-cyan">
+                          {suggestions.length} games found
+                        </span>
+                      </h3>
+                      {suggestions.map((match, idx) => (
+                        <motion.div
+                          key={match.game.id}
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: idx * 0.08 }}
+                          className="glass-panel rounded-xl p-5 border border-[oklch(0.82_0.18_200_/_0.15)] hover:border-[oklch(0.82_0.18_200_/_0.35)] transition-all duration-200"
+                          data-ocid={`suggester.item.${idx + 1}`}
+                        >
+                          <div className="flex flex-wrap items-start gap-3 mb-3">
+                            <h4 className="font-orbitron text-sm font-bold text-foreground tracking-wide uppercase flex-1">
+                              {match.game.name}
+                            </h4>
+                            <Badge
+                              className={`text-xs border ${GENRE_COLORS[match.game.genre]} bg-gaming-darker/80 shrink-0`}
+                            >
+                              {match.game.genre}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground mb-3 leading-relaxed">
+                            {match.game.description}
+                          </p>
+                          <div className="flex items-center gap-3 mb-3">
+                            <StarRating
+                              value={Math.round(match.game.rating)}
+                              readonly
+                              size="sm"
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              {match.game.rating.toFixed(1)}/5.0
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              ({match.game.releaseYear})
+                            </span>
+                          </div>
+                          <div className="bg-[oklch(0.82_0.18_200_/_0.06)] border border-[oklch(0.82_0.18_200_/_0.2)] rounded-lg px-3 py-2">
+                            <span className="text-xs font-semibold neon-text-cyan mr-2">
+                              Why this matches:
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {match.whyMatches}
+                            </span>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {suggestions.length === 0 &&
+                  suggestionCount > 0 &&
+                  !isLoadingSuggestions && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="mt-8 text-center text-muted-foreground py-10"
+                      data-ocid="suggester.empty_state"
+                    >
+                      <Bot className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                      <p className="text-sm">
+                        No matches found. Try different keywords!
+                      </p>
+                      <p className="text-xs mt-1 opacity-60">
+                        Hint: try "action", "horror", "racing", "chill", "funny"
+                      </p>
+                    </motion.div>
+                  )}
               </div>
-            </div>
-            <div className="border-t border-white/5 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3">
-              <p className="text-xs text-muted-foreground/60">
-                &copy; {new Date().getFullYear()} PLAY SENSE AI. All rights
-                reserved.
-              </p>
-              <p className="text-xs text-muted-foreground/60">
-                Built with ❤️ using{" "}
-                <a
-                  href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="neon-text-cyan hover:underline"
+            </section>
+
+            {/* ===== UPLOAD ===== */}
+            <section
+              id="upload"
+              className="py-20 max-w-7xl mx-auto px-4 sm:px-6"
+            >
+              <div className="text-center mb-12">
+                <div className="inline-flex items-center gap-2 mb-4">
+                  <ImageIcon className="w-6 h-6 neon-text-cyan" />
+                  <span className="font-orbitron text-xs font-bold tracking-[0.3em] uppercase neon-text-cyan">
+                    File Hub
+                  </span>
+                </div>
+                <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
+                  Optimize Your <span className="neon-text-cyan">Files</span>
+                </h2>
+                <p className="text-muted-foreground">
+                  Upload game screenshots, artwork, or images — up to 5 per day.
+                </p>
+              </div>
+
+              <div className="max-w-2xl mx-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="font-orbitron text-sm font-bold tracking-wide">
+                    <span className="neon-text-cyan">{uploadCount}</span>
+                    <span className="text-muted-foreground">
+                      /5 uploads used today
+                    </span>
+                  </span>
+                  {uploadCount >= 5 && (
+                    <span
+                      className="text-xs text-red-400 font-medium"
+                      data-ocid="upload.error_state"
+                    >
+                      Daily limit reached
+                    </span>
+                  )}
+                </div>
+
+                <div className="h-1.5 bg-muted/30 rounded-full mb-6 overflow-hidden">
+                  <motion.div
+                    className="h-full rounded-full bg-gradient-to-r from-[oklch(0.82_0.18_200)] to-[oklch(0.65_0.22_290)]"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${(uploadCount / 5) * 100}%` }}
+                    transition={{ duration: 0.4 }}
+                  />
+                </div>
+
+                {/* Drop Zone */}
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={handleDrop}
+                  onClick={() =>
+                    uploadCount < 5 && fileInputRef.current?.click()
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      if (uploadCount < 5) fileInputRef.current?.click();
+                    }
+                  }}
+                  tabIndex={uploadCount >= 5 ? -1 : 0}
+                  data-ocid="upload.dropzone"
+                  className={`relative rounded-2xl border-2 border-dashed p-12 text-center transition-all duration-200 ${
+                    uploadCount >= 5
+                      ? "border-muted/30 opacity-50 cursor-not-allowed"
+                      : isDragging
+                        ? "border-[oklch(0.82_0.18_200)] bg-[oklch(0.82_0.18_200_/_0.08)] cursor-copy shadow-neon-cyan"
+                        : "border-[oklch(0.82_0.18_200_/_0.3)] hover:border-[oklch(0.82_0.18_200_/_0.6)] hover:bg-[oklch(0.82_0.18_200_/_0.04)] cursor-pointer"
+                  }`}
                 >
-                  caffeine.ai
-                </a>
-              </p>
-            </div>
-          </div>
-        </footer>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="sr-only"
+                    onChange={(e) => handleFiles(e.target.files)}
+                    aria-label="Upload images"
+                  />
+                  <div className="flex flex-col items-center gap-4">
+                    <div
+                      className={`w-16 h-16 rounded-full flex items-center justify-center transition-all ${
+                        isDragging
+                          ? "neon-glow-cyan bg-[oklch(0.82_0.18_200_/_0.15)]"
+                          : "bg-[oklch(0.16_0.018_230)] border border-[oklch(0.82_0.18_200_/_0.2)]"
+                      }`}
+                    >
+                      <Upload className="w-7 h-7 neon-text-cyan" />
+                    </div>
+                    {uploadCount >= 5 ? (
+                      <div>
+                        <p className="font-semibold text-muted-foreground">
+                          Daily limit reached
+                        </p>
+                        <p className="text-sm text-muted-foreground/60 mt-1">
+                          Come back tomorrow!
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="font-semibold text-foreground">
+                          {isDragging
+                            ? "Drop your images here"
+                            : "Drag & drop images here"}
+                        </p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          or click to browse your files
+                        </p>
+                        <p className="text-xs text-muted-foreground/60 mt-2">
+                          PNG, JPG, GIF, WebP up to 10MB each
+                        </p>
+                      </div>
+                    )}
+                    {uploadCount < 5 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fileInputRef.current?.click();
+                        }}
+                        data-ocid="upload.upload_button"
+                        className="px-6 py-2 rounded-full text-sm font-semibold neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] transition-all"
+                      >
+                        Upload Files
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {uploadedImages.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mt-6 grid grid-cols-3 sm:grid-cols-5 gap-3"
+                    data-ocid="upload.list"
+                  >
+                    {uploadedImages.map((url, idx) => (
+                      <div
+                        key={url}
+                        className="relative group rounded-xl overflow-hidden aspect-square"
+                        data-ocid={`upload.item.${idx + 1}`}
+                      >
+                        <img
+                          src={url}
+                          alt={`Upload ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-gaming-darker/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                          <Check className="w-5 h-5 text-[oklch(0.82_0.18_200)]" />
+                        </div>
+                      </div>
+                    ))}
+                  </motion.div>
+                )}
+              </div>
+            </section>
+
+            {/* ===== PRICING + RATINGS ===== */}
+            <section
+              id="pricing"
+              className="py-20 max-w-7xl mx-auto px-4 sm:px-6"
+            >
+              <div className="text-center mb-12">
+                <h2 className="font-orbitron text-2xl sm:text-3xl font-bold text-foreground tracking-wider uppercase mb-3">
+                  Plans & <span className="neon-text-cyan">Community</span>
+                </h2>
+                <p className="text-muted-foreground">
+                  Level up with a subscription or share your experience
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Pricing card */}
+                <motion.div
+                  initial={{ opacity: 0, y: 30 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.5 }}
+                  className="glass-panel rounded-2xl overflow-hidden neon-border-cyan shadow-glass"
+                  data-ocid="pricing.card"
+                >
+                  <div className="p-8">
+                    <div className="inline-flex items-center gap-2 bg-[oklch(0.82_0.18_200_/_0.1)] border border-[oklch(0.82_0.18_200_/_0.3)] rounded-full px-4 py-1.5 mb-6">
+                      <Rocket className="w-3.5 h-3.5 neon-text-cyan" />
+                      <span className="font-orbitron text-xs font-bold neon-text-cyan tracking-widest">
+                        2-MONTH PACKAGE
+                      </span>
+                    </div>
+                    <div className="mb-6">
+                      <div className="flex items-end gap-2">
+                        <span className="font-orbitron text-6xl font-black neon-text-cyan leading-none">
+                          $1
+                        </span>
+                        <span className="font-orbitron text-2xl font-bold text-muted-foreground mb-1">
+                          .00
+                        </span>
+                      </div>
+                      <p className="text-muted-foreground text-sm mt-1">
+                        ₹92 (Indian Rupees) · Billed once
+                      </p>
+                    </div>
+                    <ul className="flex flex-col gap-3 mb-8">
+                      {[
+                        "Unlimited Game Suggestions",
+                        "5 Daily Image Uploads",
+                        "Priority Support",
+                        "Early Access to New Features",
+                        "Exclusive Game Deals & Alerts",
+                      ].map((feature) => (
+                        <li
+                          key={feature}
+                          className="flex items-center gap-3 text-sm text-foreground"
+                        >
+                          <div className="w-5 h-5 rounded-full bg-[oklch(0.82_0.18_200_/_0.15)] border border-[oklch(0.82_0.18_200_/_0.4)] flex items-center justify-center shrink-0">
+                            <Check className="w-3 h-3 neon-text-cyan" />
+                          </div>
+                          {feature}
+                        </li>
+                      ))}
+                    </ul>
+                    <button
+                      type="button"
+                      onClick={handleSubscribe}
+                      disabled={subscribing}
+                      data-ocid="pricing.submit_button"
+                      className="w-full py-3.5 rounded-full font-orbitron text-sm font-bold tracking-widest uppercase neon-border-cyan neon-text-cyan hover:bg-[oklch(0.82_0.18_200_/_0.15)] hover:shadow-neon-cyan transition-all duration-200 disabled:opacity-60"
+                    >
+                      {subscribing ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                          Processing...
+                        </span>
+                      ) : (
+                        <span className="flex items-center justify-center gap-2">
+                          <CreditCard className="w-4 h-4" />
+                          Subscribe Now
+                        </span>
+                      )}
+                    </button>
+                    <div className="flex items-center justify-center gap-2 mt-4">
+                      <Shield className="w-3.5 h-3.5 text-muted-foreground/60" />
+                      <p className="text-xs text-muted-foreground/60 text-center">
+                        Payment processing will be enabled once Stripe is
+                        connected
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+
+                {/* Ratings card */}
+                <motion.div
+                  id="ratings"
+                  initial={{ opacity: 0, y: 30 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.5, delay: 0.1 }}
+                  className="glass-panel rounded-2xl overflow-hidden neon-border-purple shadow-glass"
+                  data-ocid="ratings.card"
+                >
+                  <div className="p-8">
+                    <div className="inline-flex items-center gap-2 bg-[oklch(0.65_0.22_290_/_0.1)] border border-[oklch(0.65_0.22_290_/_0.3)] rounded-full px-4 py-1.5 mb-6">
+                      <Star className="w-3.5 h-3.5 text-[oklch(0.65_0.22_290)]" />
+                      <span className="font-orbitron text-xs font-bold text-[oklch(0.65_0.22_290)] tracking-widest">
+                        COMMUNITY REVIEW
+                      </span>
+                    </div>
+                    <div className="flex items-end gap-4 mb-8">
+                      <div>
+                        <div className="font-orbitron text-6xl font-black neon-text-cyan leading-none">
+                          {numRatings > 0 ? avgRating.toFixed(1) : "—"}
+                        </div>
+                        <div className="text-muted-foreground text-sm mt-1">
+                          out of 5.0
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1 pb-1">
+                        <StarRating
+                          value={numRatings > 0 ? Math.round(avgRating) : 0}
+                          readonly
+                          size="md"
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          {numRatings > 0
+                            ? `${numRatings} rating${numRatings !== 1 ? "s" : ""}`
+                            : "No ratings yet"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="border-t border-white/5 pt-6">
+                      <p className="font-orbitron text-sm font-bold tracking-widest uppercase text-foreground mb-4">
+                        Rate This Website
+                      </p>
+                      <p className="text-sm text-muted-foreground mb-5">
+                        How was your experience? Your feedback helps us improve!
+                      </p>
+                      <div className="mb-6">
+                        <StarRating
+                          value={selectedStars}
+                          onChange={setSelectedStars}
+                          size="lg"
+                        />
+                        {selectedStars > 0 && (
+                          <motion.p
+                            initial={{ opacity: 0, y: 4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="text-xs neon-text-cyan mt-2"
+                          >
+                            You selected: {selectedStars} star
+                            {selectedStars !== 1 ? "s" : ""}
+                          </motion.p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => submitRating(selectedStars, false)}
+                        disabled={ratingSubmitting || selectedStars === 0}
+                        data-ocid="ratings.submit_button"
+                        className="w-full py-3 rounded-full font-orbitron text-sm font-bold tracking-widest uppercase border border-[oklch(0.65_0.22_290_/_0.5)] text-[oklch(0.65_0.22_290)] hover:bg-[oklch(0.65_0.22_290_/_0.15)] hover:shadow-neon-purple-sm transition-all duration-200 disabled:opacity-50"
+                      >
+                        {ratingSubmitting ? (
+                          <span className="flex items-center justify-center gap-2">
+                            <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            Submitting...
+                          </span>
+                        ) : (
+                          "Submit Rating"
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+            </section>
+
+            {/* ===== FOOTER ===== */}
+            <footer className="border-t border-white/5 glass-panel py-12">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <img
+                        src="/assets/generated/playsense-logo-transparent.dim_80x80.png"
+                        alt="PLAY SENSE AI logo"
+                        style={{
+                          height: "32px",
+                          width: "auto",
+                          filter: "drop-shadow(0 0 8px #00E5FF)",
+                        }}
+                      />
+                      <span className="font-orbitron text-xs font-bold tracking-widest text-foreground">
+                        PLAY SENSE AI
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      AI-powered game discovery. Find your perfect game based on
+                      your mood and preferences.
+                    </p>
+                  </div>
+                  <div>
+                    <h4 className="font-orbitron text-xs font-bold tracking-widest uppercase text-foreground mb-4">
+                      Quick Links
+                    </h4>
+                    <ul className="flex flex-col gap-2">
+                      {navLinks.map((link) => (
+                        <li key={link.id}>
+                          <button
+                            type="button"
+                            onClick={() => scrollTo(link.id)}
+                            className="text-sm text-muted-foreground hover:neon-text-cyan transition-colors"
+                          >
+                            {link.label}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <h4 className="font-orbitron text-xs font-bold tracking-widest uppercase text-foreground mb-4">
+                      Features
+                    </h4>
+                    <ul className="flex flex-col gap-2">
+                      {[
+                        {
+                          icon: <Bot className="w-3.5 h-3.5" />,
+                          label: "AI Suggestions",
+                        },
+                        {
+                          icon: <ImageIcon className="w-3.5 h-3.5" />,
+                          label: "Image Upload",
+                        },
+                        {
+                          icon: <CreditCard className="w-3.5 h-3.5" />,
+                          label: "Subscription",
+                        },
+                        {
+                          icon: <Star className="w-3.5 h-3.5" />,
+                          label: "Ratings",
+                        },
+                      ].map(({ icon, label }) => (
+                        <li
+                          key={label}
+                          className="flex items-center gap-2 text-sm text-muted-foreground"
+                        >
+                          <span className="neon-text-cyan">{icon}</span>
+                          {label}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <div className="border-t border-white/5 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <p className="text-xs text-muted-foreground/60">
+                    &copy; {new Date().getFullYear()} PLAY SENSE AI. All rights
+                    reserved.
+                  </p>
+                  <p className="text-xs text-muted-foreground/60">
+                    Built with ❤️ using{" "}
+                    <a
+                      href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="neon-text-cyan hover:underline"
+                    >
+                      caffeine.ai
+                    </a>
+                  </p>
+                </div>
+              </div>
+            </footer>
+          </>
+        )}
       </main>
 
       {/* ===== RATING MODAL ===== */}

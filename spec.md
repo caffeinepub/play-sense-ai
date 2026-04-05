@@ -1,41 +1,48 @@
-# AI Game Specialist
+# Play Sense AI
 
 ## Current State
-New project. No existing application files.
+- Full-stack app with Motoko backend and React/TypeScript frontend
+- 55-game database across 8 genres (Action, Horror, Racing, Puzzle, Simulation, Escape, Parkour, Funny)
+- AI game suggester: user describes mood/preferences, app recommends games
+- Daily image upload limit (5/day) tracked via backend
+- Subscription recording (2-month plan, $1)
+- Star rating system with popup after every 3 interactions
+- Dark neon design with Play Sense AI branding
+- Backend stores: ratings, upload counts, subscription records
 
 ## Requested Changes (Diff)
 
 ### Add
-- AI Game Suggestion System: text input where user describes mood/preferences; keyword matching engine against a 50+ game database spanning Action, Horror, Racing, Puzzle, Simulation, Escape, Parkour, Funny categories. Returns game name, genre, description, and reason it matches. Tracks suggestion request count per session; every 3rd request triggers a "Please rate our website" modal.
-- Image Upload System: upload up to 5 images per day per session. Backend enforces the daily limit with per-session counters and daily reset. UI shows counter "X/5 uploads used today".
-- Subscription / Pricing section: shows a "2-Month Package" at $1.00 / 92 rupees with a "Subscribe Now" button. Note that Stripe is not yet connected.
-- Website Rating System: 1-5 star widget, stores ratings in backend, shows average rating and total count. Rating modal appears every 3 suggestion requests.
-- Navigation: Home, AI Game Suggester, Upload, Pricing, Ratings sections.
-- Design: dark gaming aesthetic, neon accent colors, smooth animations, hover effects, fully responsive.
+- **Full-screen Free Chat page** (ChatGPT-style):
+  - Dedicated full-screen chat interface accessible from nav
+  - Multi-turn conversation with persistent memory within session
+  - AI responds to any game-related questions (not just suggestions)
+  - Conversation history shown as chat bubbles (user left/right, AI left)
+  - Typing indicator animation while AI is "thinking"
+  - Input area at bottom with send button
+  - Clear conversation button
+  - Chat knows about all 55 games in the database (game memory)
+  - Sidebar or header showing conversation count / memory status
+  - Free to use (no subscription required)
+- **Games Memory panel**:
+  - AI remembers all games discussed in the current session
+  - Shows a "memory" sidebar or chip list of games mentioned in chat
+  - When AI references a game, it's added to the memory list
 
 ### Modify
-N/A
+- Navigation: add "Free Chat" link/button in the navbar
+- App routing: support switching between main page and full-screen chat page
 
 ### Remove
-N/A
+- Nothing removed
 
 ## Implementation Plan
-
-### Backend (Motoko)
-- `rateWebsite(rating: Nat)`: store a rating (1-5), return updated average and count
-- `getRatings()`: return current average and total count
-- `recordUpload(sessionId: Text)`: increment daily upload count for session; return new count or error if limit reached
-- `getUploadCount(sessionId: Text)`: return current count for session today
-- `recordSubscription(sessionId: Text, plan: Text)`: store subscription intent record
-- Daily reset logic: store uploads with date stamps, filter stale entries
-
-### Frontend (React/TypeScript/Tailwind)
-- App shell with sticky nav (Home, AI Suggester, Upload, Pricing, Ratings)
-- Home section: hero with neon gaming visuals, tagline
-- AI Suggester section: text input + submit; result cards showing game name, genre, description, match reason; session counter tracked in local state; RatingModal on every 3rd request
-- Game database: 50+ games hardcoded in frontend with keywords/tags for matching
-- Upload section: drag-and-drop or file input; calls backend to enforce limit; counter display
-- Pricing section: plan card with price in USD and INR, Subscribe Now button, Stripe note
-- Ratings section: star widget, average and count from backend, submit rating
-- RatingModal: shown after every 3 suggestion requests; contains star rating widget
-- Session ID: generated once per browser session (UUID stored in sessionStorage)
+1. Add `chatHistory` state management (session-local, no backend needed)
+2. Add `gameMentioned` memory tracking across chat messages
+3. Build `ChatPage` component as full-screen layout:
+   - Top bar with title, memory chips, clear button
+   - Scrollable messages area with chat bubbles
+   - Bottom input row
+4. Implement AI chat logic using the 55-game GAME_DATABASE (pattern match + context-aware responses)
+5. Add navigation link from main page navbar to ChatPage
+6. Wire routing with simple state toggle (no React Router needed)
