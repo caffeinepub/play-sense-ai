@@ -1,0 +1,222 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Bundled fonts */
+@font-face {
+  font-family: "Figtree";
+  src: url("/assets/fonts/Figtree.woff2") format("woff2");
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "GeneralSans";
+  src: url("/assets/fonts/GeneralSans.woff2") format("woff2");
+  font-weight: 200 700;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --radius: 1rem;
+
+    /* Dark cyber-gaming palette */
+    /* Near-black background: oklch(0.12 0.015 230) */
+    --background: 0.12 0.015 230;
+    /* Card surfaces: oklch(0.16 0.018 230) */
+    --card: 0.16 0.018 230;
+    --card-foreground: 0.93 0.01 230;
+    /* Popover: oklch(0.18 0.02 230) */
+    --popover: 0.18 0.02 230;
+    --popover-foreground: 0.93 0.01 230;
+    /* Foreground: white-ish #F4F7FF = oklch(0.95 0.01 260) */
+    --foreground: 0.95 0.01 260;
+    /* Primary: neon cyan #00E5FF = oklch(0.82 0.18 200) */
+    --primary: 0.82 0.18 200;
+    --primary-foreground: 0.1 0.02 230;
+    /* Secondary: purple #A855F7 = oklch(0.65 0.22 290) */
+    --secondary: 0.65 0.22 290;
+    --secondary-foreground: 0.95 0.01 260;
+    /* Muted: #A7B0C0 = oklch(0.72 0.02 240) */
+    --muted: 0.22 0.02 230;
+    --muted-foreground: 0.72 0.02 240;
+    /* Accent: teal glow */
+    --accent: 0.3 0.04 210;
+    --accent-foreground: 0.82 0.18 200;
+    /* Destructive: red */
+    --destructive: 0.577 0.245 27.325;
+    --destructive-foreground: 0.985 0 0;
+    /* Border: translucent neon */
+    --border: 0.3 0.04 210;
+    --input: 0.2 0.02 230;
+    --ring: 0.82 0.18 200;
+    /* Stars: warm yellow #F5C542 = oklch(0.82 0.18 85) */
+    --star: 0.82 0.18 85;
+    /* Chart colors */
+    --chart-1: 0.82 0.18 200;
+    --chart-2: 0.65 0.22 290;
+    --chart-3: 0.769 0.188 70;
+    --chart-4: 0.488 0.243 264;
+    --chart-5: 0.696 0.17 162;
+    /* Sidebar */
+    --sidebar: 0.14 0.015 230;
+    --sidebar-foreground: 0.93 0.01 230;
+    --sidebar-primary: 0.82 0.18 200;
+    --sidebar-primary-foreground: 0.1 0.02 230;
+    --sidebar-accent: 0.22 0.02 230;
+    --sidebar-accent-foreground: 0.93 0.01 230;
+    --sidebar-border: 0.3 0.04 210;
+    --sidebar-ring: 0.82 0.18 200;
+  }
+
+  .dark {
+    --background: 0.12 0.015 230;
+    --card: 0.16 0.018 230;
+    --card-foreground: 0.93 0.01 230;
+    --popover: 0.18 0.02 230;
+    --popover-foreground: 0.93 0.01 230;
+    --foreground: 0.95 0.01 260;
+    --primary: 0.82 0.18 200;
+    --primary-foreground: 0.1 0.02 230;
+    --secondary: 0.65 0.22 290;
+    --secondary-foreground: 0.95 0.01 260;
+    --muted: 0.22 0.02 230;
+    --muted-foreground: 0.72 0.02 240;
+    --accent: 0.3 0.04 210;
+    --accent-foreground: 0.82 0.18 200;
+    --destructive: 0.577 0.245 27.325;
+    --destructive-foreground: 0.985 0 0;
+    --border: 0.3 0.04 210;
+    --input: 0.2 0.02 230;
+    --ring: 0.82 0.18 200;
+    --chart-1: 0.82 0.18 200;
+    --chart-2: 0.65 0.22 290;
+    --chart-3: 0.769 0.188 70;
+    --chart-4: 0.488 0.243 264;
+    --chart-5: 0.696 0.17 162;
+    --sidebar: 0.14 0.015 230;
+    --sidebar-foreground: 0.93 0.01 230;
+    --sidebar-primary: 0.82 0.18 200;
+    --sidebar-primary-foreground: 0.1 0.02 230;
+    --sidebar-accent: 0.22 0.02 230;
+    --sidebar-accent-foreground: 0.93 0.01 230;
+    --sidebar-border: 0.3 0.04 210;
+    --sidebar-ring: 0.82 0.18 200;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-body;
+    background: linear-gradient(
+      135deg,
+      oklch(0.1 0.018 230) 0%,
+      oklch(0.13 0.015 240) 100%
+    );
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+}
+
+@layer utilities {
+  .font-orbitron {
+    font-family: "Orbitron", sans-serif;
+  }
+
+  .font-body {
+    font-family: "Figtree", "GeneralSans", system-ui, sans-serif;
+  }
+
+  /* Neon glow utilities */
+  .neon-glow-cyan {
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.25), 0 0 40px
+      rgba(0, 229, 255, 0.1);
+  }
+
+  .neon-glow-purple {
+    box-shadow: 0 0 20px rgba(168, 85, 247, 0.25), 0 0 40px
+      rgba(168, 85, 247, 0.1);
+  }
+
+  .neon-text-cyan {
+    color: oklch(0.82 0.18 200);
+    text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+  }
+
+  .neon-border-cyan {
+    border: 1px solid rgba(0, 229, 255, 0.4);
+    box-shadow: 0 0 15px rgba(0, 229, 255, 0.15), inset 0 0 15px
+      rgba(0, 229, 255, 0.05);
+  }
+
+  .neon-border-purple {
+    border: 1px solid rgba(168, 85, 247, 0.4);
+    box-shadow: 0 0 15px rgba(168, 85, 247, 0.15), inset 0 0 15px
+      rgba(168, 85, 247, 0.05);
+  }
+
+  .glass-panel {
+    background: rgba(18, 26, 36, 0.75);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .gradient-border {
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    position: relative;
+  }
+
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      rgba(0, 229, 255, 0.5),
+      rgba(168, 85, 247, 0.5)
+    );
+    z-index: -1;
+  }
+
+  /* Ambient blobs */
+  .blob-cyan {
+    background: radial-gradient(
+      circle,
+      rgba(0, 213, 255, 0.15) 0%,
+      transparent 70%
+    );
+  }
+
+  .blob-purple {
+    background: radial-gradient(
+      circle,
+      rgba(168, 85, 247, 0.15) 0%,
+      transparent 70%
+    );
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: oklch(0.12 0.015 230);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.3 0.04 210);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.82 0.18 200 / 0.5);
+  }
+}
